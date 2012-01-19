@@ -97,7 +97,8 @@ page.search('//div[@id="folders"]/div[@class="nodes"][2]//span[@class="node"]/a'
       else
         puts "   downloading #{did} (#{doctitle})"
         File.open("#{folderpath_hidden}/#{file}", "w") { |f| f.write agent.get_file(url) }
-        
+
+	doctitle.gsub!(/\//, ':')
         if SYMLINK
           File.symlink(".documents/#{file}", "#{folderpath}/#{date} - #{sender} - #{doctitle}.pdf")
         else
