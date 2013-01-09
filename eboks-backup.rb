@@ -32,7 +32,7 @@ def cookies_from_selenium
   driver.navigate.to "https://min.e-boks.dk/logon.aspx?logontype=oces"
 
   loop do
-    break if driver.title == "e-Boks"
+    break if driver.title =~ %r(^e-Boks )
     sleep 1
   end
 
