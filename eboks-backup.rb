@@ -17,6 +17,7 @@
 require 'bundler'; Bundler.setup
 require 'selenium-webdriver'
 require 'mechanize'
+require 'fileutils'
 
 ## CONFIG
 
@@ -54,55 +55,73 @@ end
 # Re-fetch page now that the login-cookies have been added
 page = agent.get('https://min.e-boks.dk/inbox.aspx')
 
-# Process each folder - the second set of <div class="nodes"> is "Arkivmapper", which is what we're going to backup
-page.search('//div[@id="folders"]/div[@class="nodes"][2]//span[@class="node"]/a').each do |folderlink|
-  next if folderlink["title"] == "Arkivmapper"
+page.search('//div[@id="folders_options_toolbar"]//a[@class="archive"]').each do |userlink|
+  username = userlink['title']
+  userlink = userlink['href']
 
-  foldertitle = folderlink["title"]
-  folderpath = "#{BACKUP_PATH}/#{foldertitle}"
-  folderpath_hidden = "#{folderpath}/.documents"
+  next if userlink =~ /^javascript/
 
-  puts "\nNavigating to folder '#{foldertitle}'"
-  Dir.mkdir folderpath unless Dir.exist? folderpath
-  Dir.mkdir folderpath_hidden unless Dir.exist? folderpath_hidden
+  page = agent.get(userlink)
 
-  folderpage = agent.get("https://min.e-boks.dk/inbox.aspx#{folderlink['href']}")
-  folderpage.search('//div[@id="messages"]/ul/li/dl').each do |msg|
-    elm = msg.xpath('.//dt/label/input').first
-    if elm["name"] != "did"
-      $stderr.puts "Error. HTML may have changed, and script needs updating."
-      $stderr.puts reason
-      exit 1
-    end
+  # Process each folder - the second set of <div class="nodes"> is "Arkivmapper", which is what we're going to backup
+  page.search('//div[@id="folders"]/div[@class="nodes"][2]//span[@class="node"]/a').each do |folderlink|
+    next if folderlink["title"] == "Arkivmapper"
 
-    did = elm["value"]
-    title = msg.xpath('.//dt/label/span').first.content
-    sender = msg.xpath('.//dd[@class="content"]/span').first.content
-    links = msg.xpath('.//dd[@class="content"]/ul/li/a')
-    date = msg.xpath('.//dd[@class="actions"]/span').first.content.split('-').reverse.join('-')
+    foldertitle = folderlink["title"]
+    folderpath = "#{BACKUP_PATH}/#{username}/#{foldertitle}"
+    folderpath_hidden = "#{folderpath}/.documents"
 
-    puts " - found Document ID: #{did} from #{date} (\"#{sender} - #{title}\")"
+    puts "\nNavigating to folder '#{username}/#{foldertitle}'"
+    FileUtils.mkdir_p folderpath unless Dir.exist? folderpath
+    FileUtils.mkdir_p folderpath_hidden unless Dir.exist? folderpath_hidden
 
-    links.each do |link|
-      doctitle = title
-      doctitle = "#{title} (#{link["title"]})" if link["title"] != title # Attachment
-      query_args = link["href"].split('?', 2)[1]
-      duid = query_args.match(/duid=(\w+)&/).captures.first
-      url = "https://download.e-boks.dk/privat/download.aspx?#{query_args.gsub('&', '&amp;')}" # don't ask - the link is pseudo-escaped from e-boks's side
-      file = "#{did}-#{duid}.pdf"
+    folderpage = agent.get("https://min.e-boks.dk/inbox.aspx#{folderlink['href']}")
+    folderpage.search('//div[@id="messages"]/ul/li/dl').each do |msg|
+      elm = msg.xpath('.//dt/label/input').first
+      if elm["name"] != "did"
+        $stderr.puts "Error. HTML may have changed, and script needs updating."
+        $stderr.puts reason
+        exit 1
+      end
 
-      if File.exist? "#{folderpath_hidden}/#{file}"
-        puts "   already downloaded, skipping."
-        next
-      else
-        puts "   downloading #{did} (#{doctitle})"
-        File.open("#{folderpath_hidden}/#{file}", "w") { |f| f.write agent.get_file(url) }
+      did = elm["value"]
+      title = msg.xpath('.//dt/label/span').first.content
+      sender = msg.xpath('.//dd[@class="content"]/span').first.content
+      links = msg.xpath('.//dd[@class="content"]/ul/li/a')
+      date = msg.xpath('.//dd[@class="actions"]/span').first.content.split('-').reverse.join('-')
 
-	doctitle.gsub!(/\//, ':')
-        if SYMLINK
-          File.symlink(".documents/#{file}", "#{folderpath}/#{date} - #{sender} - #{doctitle}.pdf")
+      puts " - found Document ID: #{did} from #{date} (\"#{sender} - #{title}\")"
+
+      links.each do |link|
+        doctitle = title
+        doctitle = "#{title} (#{link["title"]})" if link["title"] != title # Attachment
+        query_args = link["href"].split('?', 2)[1]
+        duid = query_args.match(/duid=(\w+)&/).captures.first
+        url = "https://download.e-boks.dk/privat/download.aspx?#{query_args.gsub('&', '&amp;')}" # don't ask - the link is pseudo-escaped from e-boks's side
+        file = "#{did}-#{duid}.pdf"
+
+        if File.exist? "#{folderpath_hidden}/#{file}"
+          puts "   already downloaded, skipping."
+          next
         else
-          File.link("#{folderpath_hidden}/#{file}", "#{folderpath}/#{date} - #{sender} - #{doctitle}.pdf")
+          puts "   downloading #{did} (#{doctitle})"
+          File.open("#{folderpath_hidden}/#{file}", "w") { |f| f.write agent.get_file(url) }
+
+          doctitle.gsub!(/\//, ':')
+
+          # Determine filename, uniquifying if necessary
+          filename = "#{date} - #{sender} - #{doctitle}"
+          i = 2
+          while File.exist?("#{folderpath}/#{filename}.pdf")
+            filename = "#{date} - #{sender} - #{doctitle} (#{i})"
+            i += 1
+          end
+
+          if SYMLINK
+            File.symlink(".documents/#{file}", "#{folderpath}/#{filename}.pdf")
+          else
+            File.link("#{folderpath_hidden}/#{file}", "#{folderpath}/#{filename}.pdf")
+          end
         end
       end
     end
