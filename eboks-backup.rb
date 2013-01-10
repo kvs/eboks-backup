@@ -9,10 +9,7 @@
 #
 # Only backs up stuff under "Arkivmapper", and doesn't really support nested folders.
 #
-# FIXME: Doesn't support pagination, since I haven't gotten any folders with that many
-# documents yet.
-#
-# (c) Copyright 2011, Kenneth Vestergaard.
+# (c) Copyright 2011-2013, Kenneth Vestergaard.
 
 require 'bundler'; Bundler.setup
 require 'selenium-webdriver'
@@ -40,6 +37,62 @@ def cookies_from_selenium
   driver.quit
   cookies
 end
+
+# Download all messages on a folder page.
+def process_page(folderpage, folderpath, folderpath_hidden, agent)
+  folderpage.search('//div[@id="messages"]/ul/li/dl').each do |msg|
+
+    elm = msg.xpath('.//dt/label/input').first
+    if elm["name"] != "did"
+      $stderr.puts "Error. HTML may have changed, and script needs updating."
+      $stderr.puts reason
+      exit 1
+    end
+
+    did = elm["value"]
+    title = msg.xpath('.//dt/label/span').first.content
+    sender = msg.xpath('.//dd[@class="content"]/span').first.content
+    links = msg.xpath('.//dd[@class="content"]/ul/li/a')
+    date = msg.xpath('.//dd[@class="actions"]/span').first.content.split('-').reverse.join('-')
+
+    puts " - found Document ID: #{did} from #{date} (\"#{sender} - #{title}\")"
+
+    links.each do |link|
+      doctitle = title
+      doctitle = "#{title} (#{link["title"]})" if link["title"] != title # Attachment
+      query_args = link["href"].split('?', 2)[1]
+      duid = query_args.match(/duid=(\w+)&/).captures.first
+      url = "https://download.e-boks.dk/privat/download.aspx?#{query_args.gsub('&', '&amp;')}" # don't ask - the link is pseudo-escaped from e-boks's side
+      file = "#{did}-#{duid}.pdf"
+
+      if File.exist? "#{folderpath_hidden}/#{file}"
+        puts "   already downloaded, skipping."
+        next
+      else
+        puts "   downloading #{did} (#{doctitle})"
+        File.open("#{folderpath_hidden}/#{file}", "w") { |f| f.write agent.get_file(url) }
+
+        doctitle.gsub!(/\//, ':')
+
+        # Determine filename, uniquifying if necessary
+        filename = "#{date} - #{sender} - #{doctitle}"
+        i = 2
+        while File.exist?("#{folderpath}/#{filename}.pdf")
+          filename = "#{date} - #{sender} - #{doctitle} (#{i})"
+          i += 1
+        end
+
+        if SYMLINK
+          File.symlink(".documents/#{file}", "#{folderpath}/#{filename}.pdf")
+        else
+          File.link("#{folderpath_hidden}/#{file}", "#{folderpath}/#{filename}.pdf")
+        end
+      end
+    end
+  end
+end
+
+###
 
 # Start a Mechanize-session, and add cookies from Selenium
 agent = Mechanize.new
@@ -76,54 +129,10 @@ page.search('//div[@id="folders_options_toolbar"]//a[@class="archive"]').each do
     FileUtils.mkdir_p folderpath_hidden unless Dir.exist? folderpath_hidden
 
     folderpage = agent.get("https://min.e-boks.dk/inbox.aspx#{folderlink['href']}")
-    folderpage.search('//div[@id="messages"]/ul/li/dl').each do |msg|
-      elm = msg.xpath('.//dt/label/input').first
-      if elm["name"] != "did"
-        $stderr.puts "Error. HTML may have changed, and script needs updating."
-        $stderr.puts reason
-        exit 1
-      end
-
-      did = elm["value"]
-      title = msg.xpath('.//dt/label/span').first.content
-      sender = msg.xpath('.//dd[@class="content"]/span').first.content
-      links = msg.xpath('.//dd[@class="content"]/ul/li/a')
-      date = msg.xpath('.//dd[@class="actions"]/span').first.content.split('-').reverse.join('-')
-
-      puts " - found Document ID: #{did} from #{date} (\"#{sender} - #{title}\")"
-
-      links.each do |link|
-        doctitle = title
-        doctitle = "#{title} (#{link["title"]})" if link["title"] != title # Attachment
-        query_args = link["href"].split('?', 2)[1]
-        duid = query_args.match(/duid=(\w+)&/).captures.first
-        url = "https://download.e-boks.dk/privat/download.aspx?#{query_args.gsub('&', '&amp;')}" # don't ask - the link is pseudo-escaped from e-boks's side
-        file = "#{did}-#{duid}.pdf"
-
-        if File.exist? "#{folderpath_hidden}/#{file}"
-          puts "   already downloaded, skipping."
-          next
-        else
-          puts "   downloading #{did} (#{doctitle})"
-          File.open("#{folderpath_hidden}/#{file}", "w") { |f| f.write agent.get_file(url) }
-
-          doctitle.gsub!(/\//, ':')
-
-          # Determine filename, uniquifying if necessary
-          filename = "#{date} - #{sender} - #{doctitle}"
-          i = 2
-          while File.exist?("#{folderpath}/#{filename}.pdf")
-            filename = "#{date} - #{sender} - #{doctitle} (#{i})"
-            i += 1
-          end
-
-          if SYMLINK
-            File.symlink(".documents/#{file}", "#{folderpath}/#{filename}.pdf")
-          else
-            File.link("#{folderpath_hidden}/#{file}", "#{folderpath}/#{filename}.pdf")
-          end
-        end
-      end
+    process_page(folderpage, folderpath, folderpath_hidden, agent)
+    while next_page_link = folderpage.search('//div[@id="messages_paging_toolbar"]/ul/li/a[@class="next"]').first
+      folderpage = agent.get("https://min.e-boks.dk/inbox.aspx#{next_page_link.attributes['href'].value}")
+      process_page(folderpage, folderpath, folderpath_hidden, agent)
     end
   end
 end
